@@ -1,0 +1,24 @@
+# spider_walk: fetched with get_trick.py. Edit the description -- it is what Gemini reads
+# when deciding whether to play this trick.
+description: Lies down and scoots forward by wiggling its legs like a silly spider
+type: policy
+policy: policy.json
+start_pose: standing
+end_pose: standing
+max_body_angle_deg: 60   # the tilt e-stop while the trick plays
+# This policy has clips. Name the ones Gemini may ask for while the trick runs,
+# and the clip that returns to standing (played before any other motion):
+# actions:
+spider_down: stand, lie down, wiggle, settle into the spider stance
+spider_idle: hold spider_down stance 
+spider_up: wiggle, stand back up
+exit_clip: spider_up
+end_pose: spider_idle #<the pose the looping clip holds> 
+walk:                      # it walks in its stance: move, turn and arc drive this policy
+  policy: walk_policy.json
+  speed: 0.1              # default m/s for move and arc
+  max_forward: 0.15        # m/s; at most 0.15 (what it was trained for)
+  max_sideways: 0.1       # m/s; at most 0.1
+  turn: 34               # deg/s; at most 34
+  run: false
+  note: TODO anything else Gemini should know about walking like this

@@ -1,0 +1,24 @@
+# Pupper's stamp: where it is and how carefully Pupper aims it (board/stamp_plan.py reads
+# this; lab/board_game.py re-reads it on every move, so edits apply without a restart).
+
+# Off until the stamp is mounted and board/calibrate_walk.py has measured the walk.
+# Off, Pupper asks the person to draw its X instead.
+enabled: true
+
+# Measure on the robot, standing: from the camera lens, straight back along Pupper's
+# centreline (seen from above) to the middle of the stamp's face. Then how far the stamp
+# sits to Pupper's left of the centreline (right: negative; ideally 0).
+stamp_behind_camera_cm: 5.0
+stamp_left_of_camera_cm: 0.0
+
+# The trick that presses the stamp down. It must start and end standing.
+crouch_trick: push_up
+
+# Aiming. With the A3 board a cell is 7.5 cm, so the stamp's middle may be off by about
+# 2.5 cm and its X still lands inside the cell (less if the stamp is wide).
+lateral_tolerance_cm: 1.5   # line up sideways to within this before walking in
+yaw_tolerance_deg: 4.0      # face the board squarely to within this
+blind_max_cm: 30.0          # the longest forward walk without a fresh look
+blind_target_cm: 22.0       # when further, walk until this much is left, then look again
+max_steps: 8                # looks before giving up
+max_walk_cm: 150.0          # a stamping trip never walks further than this in total
