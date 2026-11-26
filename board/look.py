@@ -6,8 +6,9 @@
     python3 board/look.py --image photo.jpg  # read a saved frame instead
     python3 board/look.py --json             # the full reading: every cell's ink, position, bearing
 
-The frame comes from the robot stack's camera topic when the stack is running
-(robot/start.sh), else straight from the camera with rpicam-still. Debug images
+The frame comes from the USB board camera (board/usb_camera.py) when it is
+plugged in; else from Pupper's own fisheye camera: the robot stack's camera
+topic when the stack is running (robot/start.sh), else rpicam-still. Debug images
 go to --out (default ~/board_look, kept across reboots): raw.jpg (markers and cell centres on the
 fisheye frame), view.jpg (the zoomed, undistorted view), topdown.jpg (the
 board from above, with each cell's ink score) and last_found_frame.jpg (the last
@@ -33,10 +34,11 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import usb_camera  # noqa: E402
 from board_vision import CAMERA_PARAMS, BoardReader  # noqa: E402
 from layout import Layout  # noqa: E402
 
-WIDTH, HEIGHT = 1400, 1050  # what the robot stack's camera node publishes; the lens model is for this
+WIDTH, HEIGHT = 1400, 1050  # what the robot stack's camera node publishes; the fisheye lens model is for this
 TOPIC = "/camera/image_raw/compressed"
 
 
@@ -74,6 +76,13 @@ class RosCamera:
             return False
         out = subprocess.run(["ros2", "topic", "list"], capture_output=True, text=True, timeout=15).stdout
         return TOPIC in out.split()
+
+
+class UsbCamera:
+    """The USB board camera (not while the robot server is mid-look: one program at a time)."""
+
+    def grab(self, timeout: float = 10.0) -> np.ndarray | None:
+        return usb_camera.grab()
 
 
 class StillCamera:
@@ -118,16 +127,23 @@ def report(reading, as_json: bool) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--image", type=Path, help="read this saved frame (1400 x 1050, straight from the camera)")
-    ap.add_argument("--source", choices=["auto", "ros", "still"], default="auto")
+    ap.add_argument("--image", type=Path, help="read this saved frame, straight from the camera")
+    ap.add_argument("--source", choices=["auto", "usb", "ros", "still"], default="auto",
+                    help="auto: the USB camera if plugged in, else Pupper's own camera")
+    ap.add_argument("--fisheye", action="store_true",
+                    help="with --image: the frame is from Pupper's fisheye camera (default: the USB camera's)")
     ap.add_argument("--watch", action="store_true", help="keep reading until Ctrl-C")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--scale", type=float, default=1.4, help="the board's make_board.py --scale (1.4: the A3 board)")
     ap.add_argument("--out", type=Path, default=Path.home() / "board_look", help="debug images go here")
     args = ap.parse_args()
 
-    reader = BoardReader(Layout(scale=args.scale))
     args.out.mkdir(parents=True, exist_ok=True)
+    source = args.source
+    if source == "auto" and not args.image:
+        source = "usb" if usb_camera.available() else "ros" if RosCamera.available() else "still"
+    usb = (not args.fisheye) if args.image else source == "usb"
+    reader = BoardReader(Layout(scale=args.scale), usb_camera.PARAMS if usb else CAMERA_PARAMS)
 
     if args.image:
         frame = cv2.imread(str(args.image))
@@ -135,13 +151,13 @@ def main() -> int:
             return print(f"cannot read {args.image}") or 1
         camera = None
     else:
-        source = args.source
-        if source == "auto":
-            source = "ros" if RosCamera.available() else "still"
+        if source == "usb" and not usb_camera.available():
+            return print("the USB board camera isn't plugged in") or 1
         if source == "still" and not shutil.which("rpicam-still"):
             return print("no camera: the robot stack isn't running and rpicam-still is missing") or 1
-        camera = RosCamera() if source == "ros" else StillCamera()
-        print(f"camera: {'robot stack topic ' + TOPIC if source == 'ros' else 'rpicam-still (robot stack off)'}")
+        camera = {"usb": UsbCamera, "ros": RosCamera, "still": StillCamera}[source]()
+        print("camera: " + {"usb": f"USB board camera {usb_camera.device()}", "ros": "robot stack topic " + TOPIC,
+                            "still": "rpicam-still (robot stack off)"}[source])
 
     while True:
         if camera is not None:
@@ -151,7 +167,7 @@ def main() -> int:
                 if not args.watch:
                     return 1
                 continue
-        if frame.shape[1] != WIDTH or frame.shape[0] != HEIGHT:
+        if not usb and (frame.shape[1] != WIDTH or frame.shape[0] != HEIGHT):
             print(f"note: frame is {frame.shape[1]} x {frame.shape[0]}; the lens model is for {WIDTH} x {HEIGHT}")
         t0 = time.monotonic()
         reading = reader.read(frame)

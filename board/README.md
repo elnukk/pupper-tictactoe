@@ -9,7 +9,8 @@ and plays X by walking a stamp under its chest over a cell and crouching.
 | `layout.py` | the board's geometry in cm, shared by the printer and the reader |
 | `make_board.py` | writes the printable PDF |
 | `board_vision.py` | `BoardReader().read(frame)`: the reading (grid, cells, the board's pose) |
-| `look.py` | grab a frame from Pupper's camera and print what it reads |
+| `look.py` | grab a frame from the board camera and print what it reads |
+| `usb_camera.py`, `usb_camera.yaml` | the USB board camera (ELP 16MP): grabbing a frame, and its lens |
 | `tictactoe.py` | the rules, Pupper's move chooser and the referee |
 | `stamp_plan.py` | where Pupper stands on the board, and how to walk the stamp over a cell |
 | `stamp.yaml` | where the stamp is mounted, and stamping on/off |
@@ -29,13 +30,25 @@ A3 board (4.2 cm times the scale). Everything defaults to the A3 board (scale
 the server with `BOARD_SCALE=...`. Matte paper, taped down flat (Pupper walks on
 it), markers unmarked. Lay it with **"Pupper's side" towards the robot**.
 
+## The board camera
+
+A USB camera (ELP 16MP, plain lens) reads the board whenever it's plugged in;
+without it, Pupper's own fisheye camera does. It can sit anywhere, at any
+angle: on a stand, taped up high, off to one side. The cells are numbered from
+the board's printed "Pupper's side" edge, not from the camera, so the camera
+can even look from the opposite side. For a good reading, all four corner
+markers in view, and a cell at least ~40 px wide in its frame: from straight
+above about 60-100 cm up, or at a slant from up to about 1 m away (the higher
+it looks down, the better). Stamping still steers by Pupper's own camera.
+
 ## Look at it
 
     python3 board/look.py            # one reading
     python3 board/look.py --watch    # keep reading while you place the board
     python3 board/look.py --json     # every cell: ink, mark, camera-frame position, bearing
 
-It uses the robot stack's camera topic when the stack runs, else `rpicam-still`.
+It uses the USB board camera when plugged in; else Pupper's camera (the robot
+stack's camera topic when the stack runs, else `rpicam-still`).
 Debug images go to `~/board_look/`; when a reading is wrong, open
 `topdown.jpg` first. Gemini's own looks are saved there too, as `gemini_*.jpg`.
 

@@ -52,6 +52,20 @@ MIN_CELL_PX = 11  # a cell smaller than this in the raw frame (either way) is to
 
 
 # ----------------------------------------------------------------------------- lens
+def load_model(path: Path, w: int, h: int) -> DoubleSphereModel:
+    """The lens model for a w x h frame. A params file with `size: [w, h]` is
+    scaled to other frame sizes (same field of view); one without is used as is."""
+    import yaml
+
+    model = load_camera_model(path, w, h)
+    size = (yaml.safe_load(Path(path).read_text()) or {}).get("size")
+    if size and (size[0], size[1]) != (w, h):
+        sx, sy = w / size[0], h / size[1]
+        model.fx, model.cx = model.fx * sx, (model.cx + 0.5) * sx - 0.5
+        model.fy, model.cy = model.fy * sy, (model.cy + 0.5) * sy - 0.5
+    return model
+
+
 def unproject(model: DoubleSphereModel, u, v):
     """Pixels -> unit rays (x, y, z) in the camera frame, and which pixels are inside the lens."""
     mx = (np.asarray(u, np.float64) - model.cx) / model.fx
@@ -234,7 +248,7 @@ class BoardReader:
     def read(self, frame: np.ndarray) -> Reading:
         h, w = frame.shape[:2]
         if self.model is None or (self.model.width, self.model.height) != (w, h):
-            self.model = load_camera_model(self.camera_params, w, h)
+            self.model = load_model(self.camera_params, w, h)
         model = self.model
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
 
@@ -339,14 +353,14 @@ class BoardReader:
         return reading
 
     # ------------------------------------------------------------------------- views
-    @staticmethod
-    def _aim(rays: np.ndarray, pad: float) -> VirtualCamera:
+    def _aim(self, rays: np.ndarray, pad: float) -> VirtualCamera:
         """A virtual camera centred on these rays, wide enough for all of them."""
         direction = rays.mean(axis=0)
         direction /= np.linalg.norm(direction)
         spread = max(math.degrees(math.acos(np.clip(r @ direction, -1, 1))) for r in rays)
         fov = float(np.clip(2 * spread * pad + 4, 20, 140))
-        size = int(np.clip(fov * 8, 300, 1200))  # ~2x the lens's own px/deg; more only blurs
+        lens_px_per_deg = self.model.fx * math.pi / 180  # at the centre (fisheye: ~4, the USB camera: ~19)
+        size = int(np.clip(fov * 2 * lens_px_per_deg, 300, 1600))  # ~2x the lens's own px/deg; more only blurs
         return VirtualCamera.looking_at(direction, fov, size)
 
     def _fit(self, cam: VirtualCamera, known: dict[int, np.ndarray]) -> np.ndarray | None:

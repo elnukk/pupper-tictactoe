@@ -1,8 +1,11 @@
 """Tic-tac-toe: Pupper plays X on a printed board it reads with its camera, and
 stamps its moves with a stamp under its chest.
 
-The camera reading is board/board_vision.py (the same reader as board/look.py);
-the rules, Pupper's moves and the referee are board/tictactoe.py; where Pupper
+The camera reading is board/board_vision.py (the same reader as board/look.py),
+from the USB board camera (board/usb_camera.py) when it's plugged in: it can
+sit anywhere, at any angle. Without it, Pupper's own fisheye camera reads.
+Stamping always steers by Pupper's own camera (it needs Pupper's pose).
+The rules, Pupper's moves and the referee are board/tictactoe.py; where Pupper
 is on the board and how to walk the stamp over a cell is board/stamp_plan.py.
 Gemini only talks: it never reads the board from the video and never picks
 Pupper's move.
@@ -52,12 +55,15 @@ BOARD_SCALE = float(os.environ.get("BOARD_SCALE", "1.4"))
 DEBUG_DIR = Path.home() / "board_look"  # what Gemini's last look saw: gemini_*.jpg
 CANT_SEE = ("Ask the person to lay the board flat with its near edge 15-20 cm in front of Pupper's"
             " face (Pupper standing), the \"Pupper's side\" edge towards Pupper.")
+CANT_SEE_USB = ("Ask the person to check the board is flat, lit, and fully in view of the board camera"
+                " (all four corner markers visible, nothing covering them).")
 SETTLE_S = 0.8  # after a move, stand still this long before looking (the body stops swaying)
 MIN_BURST_S = 0.3  # the walking policy doesn't take a step for a shorter burst (0.14 s moved nothing)
 STUCK_FRACTION = 0.3  # a move that covers less than this of what it asked for didn't happen
 SURPRISE_CM, SURPRISE_DEG = 4.0, 8.0  # moving this much more than asked (or the wrong way): stop at once
 
-_reader = None
+_readers = {}  # "usb" / "own" -> BoardReader
+_usb_lock = __import__("threading").Lock()  # one grab from the USB camera at a time
 game: ttt.Game | None = None  # the game being played, if any
 stamping = {"running": False, "cell": None, "result": None}  # the last stamping job
 
@@ -68,19 +74,25 @@ def _layout():
     return Layout(scale=BOARD_SCALE)
 
 
-def _read(jpeg: bytes):
-    """Decode one camera frame and read the board (slow: run it off the event loop)."""
-    global _reader
+def _read(jpeg: bytes | None):
+    """Read the board from one of Pupper's own camera frames (JPEG), or, with
+    None, from a fresh USB camera frame (slow: run it off the event loop)."""
     import cv2
     import numpy as np
-    from board_vision import BoardReader
+    import usb_camera
+    from board_vision import CAMERA_PARAMS, BoardReader
 
-    if _reader is None:
-        _reader = BoardReader(_layout())
-    frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+    which = "own" if jpeg is not None else "usb"
+    if which not in _readers:
+        _readers[which] = BoardReader(_layout(), CAMERA_PARAMS if which == "own" else usb_camera.PARAMS)
+    if jpeg is None:
+        with _usb_lock:
+            frame = usb_camera.grab()
+    else:
+        frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
     if frame is None:
         return None
-    reading = _reader.read(frame)
+    reading = _readers[which].read(frame)
     try:
         DEBUG_DIR.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(DEBUG_DIR / "gemini_frame.jpg"), frame)
@@ -91,8 +103,21 @@ def _read(jpeg: bytes):
     return reading
 
 
-async def observe(robot: Robot):
-    """(reading, "") from the latest camera frame, or (None, why not)."""
+def usb_board_camera() -> bool:
+    import usb_camera
+    return usb_camera.available()
+
+
+async def observe(robot: Robot, own: bool = False):
+    """(reading, "") from the board camera, or (None, why not). own: Pupper's own
+    camera even when the USB board camera is plugged in (stamping steers by it)."""
+    if not own and usb_board_camera():
+        reading = await asyncio.to_thread(_read, None)
+        if reading is None:
+            return None, "no frame from the USB board camera (unplugged, or busy in another program)"
+        if not reading.found:
+            return None, f"can't read the board: {reading.message}"
+        return reading, ""
     try:
         msg = robot.latest_image.get_nowait()
     except Exception:
@@ -113,6 +138,8 @@ async def read_board(robot: Robot) -> tuple[str | None, str]:
     """(board as 9 characters, "") from the latest camera frame, or (None, why not)."""
     reading, why = await observe(robot)
     if reading is None:
+        if why.startswith("can't read") and usb_board_camera():
+            return None, f"{why}. {CANT_SEE_USB}"
         return None, f"{why}. {CANT_SEE}" if why.startswith("can't read") else why
     return "".join(m for row in reading.grid for m in row), ""
 
@@ -187,7 +214,7 @@ async def stamp_cell(robot: Robot, cell: int, cfg: sp.StampConfig, cal: sp.WalkC
     pose, asked, stuck = None, None, 0  # the latest pose, the last move asked for (axis, amount), moves that didn't
 
     for _ in range(cfg.max_steps):
-        reading, why = await observe(robot)
+        reading, why = await observe(robot, own=True)
         if reading is None or reading.board_R is None:
             if p is not None and last == "forward":
                 break  # the board went out of view as Pupper closed in: finish blind on the last plan
