@@ -289,6 +289,24 @@ def camera_image():
     return Response(content=jpeg, media_type="image/jpeg")
 
 
+BOARD_DIR = Path(__file__).resolve().parent.parent / "board"
+
+
+@app.get("/camera/board")
+def camera_board():
+    """The USB board camera, live (web app Camera Source "Board Camera (USB)")."""
+    import sys
+    if str(BOARD_DIR) not in sys.path:
+        sys.path.append(str(BOARD_DIR))
+    import usb_camera
+    if not usb_camera.available():
+        return Response(status_code=503, content="the USB board camera isn't plugged in")
+    jpeg = usb_camera.latest_jpeg()
+    if jpeg is None:
+        return Response(status_code=503, content="no board camera frame yet (starting, or busy in another program)")
+    return Response(content=jpeg, media_type="image/jpeg")
+
+
 @app.get("/camera/raw")
 def camera_raw():
     """The latest frame as the camera sent it (fisheye JPEG), for board/calibrate_walk.py."""

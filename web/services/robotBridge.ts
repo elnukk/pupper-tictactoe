@@ -32,7 +32,7 @@ class RobotBridge {
       return await response.json();
     } catch (e) {
       // Suppress log spam for polling
-      if(endpoint !== '/system/status' && endpoint !== '/camera/image') {
+      if(endpoint !== '/system/status' && endpoint !== '/camera/image' && endpoint !== '/camera/board') {
          console.error(`[RobotBridge] Error calling ${endpoint}`, e);
       }
       return { success: false, message: `robot unreachable: ${(e as Error)?.message || e}` };
@@ -48,9 +48,10 @@ class RobotBridge {
     return null;
   }
   
-  async getCameraImage(): Promise<Blob | null> {
+  async getCameraImage(source: 'server' | 'board' = 'server'): Promise<Blob | null> {
       try {
-          const blob = await this.request('/camera/image', 'GET', undefined, true);
+          const endpoint = source === 'board' ? '/camera/board' : '/camera/image';
+          const blob = await this.request(endpoint, 'GET', undefined, true);
           if (blob instanceof Blob) {
               return blob;
           }

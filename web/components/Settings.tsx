@@ -134,6 +134,7 @@ const Settings: React.FC<SettingsProps> = ({ apiKey, setApiKey, config, setConfi
                 >
                   <option value="browser">Browser Camera (Webcam)</option>
                   <option value="server">Robot Camera (Local Server)</option>
+                  <option value="board">Board Camera (USB)</option>
                 </select>
              </div>
 

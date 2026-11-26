@@ -88,7 +88,7 @@ const DebugPanel: React.FC<DebugPanelProps> = ({ logs, videoElement, robotBridge
 
   // Polling Effect for Server Image (2Hz)
   useEffect(() => {
-    if (cameraSource !== 'server') {
+    if (cameraSource === 'browser') {
         // Cleanup if switching away from server
         if (lastUrlRef.current) {
             URL.revokeObjectURL(lastUrlRef.current);
@@ -102,7 +102,7 @@ const DebugPanel: React.FC<DebugPanelProps> = ({ logs, videoElement, robotBridge
     const fetchImage = async () => {
         if (!active) return;
         try {
-            const blob = await robotBridge.getCameraImage();
+            const blob = await robotBridge.getCameraImage(cameraSource);
             if (!active) return;
             
             if (blob) {
@@ -256,7 +256,7 @@ const DebugPanel: React.FC<DebugPanelProps> = ({ logs, videoElement, robotBridge
             className="relative bg-black border border-gray-700 rounded overflow-hidden shrink-0"
             >
                 <div className="absolute top-1 left-1 bg-red-600/80 text-white px-1 text-[10px] rounded z-10 pointer-events-none backdrop-blur-sm">LIVE CAM</div>
-                {cameraSource === 'server' && serverImage && (
+                {cameraSource !== 'browser' && serverImage && (
                     <img src={serverImage} className="w-full h-full object-contain bg-black" alt="Robot Camera" />
                 )}
             </div>

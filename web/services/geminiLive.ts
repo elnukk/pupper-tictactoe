@@ -259,7 +259,7 @@ export class GeminiLiveService {
     this.inputScriptProcessor.connect(ctx.destination);
   }
 
-  private setupVideoInput(videoEl: HTMLVideoElement, source: 'browser' | 'server') {
+  private setupVideoInput(videoEl: HTMLVideoElement, source: 'browser' | 'server' | 'board') {
     if (this.videoInterval) clearInterval(this.videoInterval);
     
     if (source === 'browser') {
@@ -293,7 +293,7 @@ export class GeminiLiveService {
         // Server source
         this.videoInterval = window.setInterval(async () => {
              if (!this.connected || !this.sessionPromise) return;
-             const blob = await this.robotBridge.getCameraImage();
+             const blob = await this.robotBridge.getCameraImage(source);
              if (blob && this.connected) {
                  const base64 = await blobToBase64(blob);
                  this.sessionPromise?.then(session => {

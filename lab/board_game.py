@@ -33,6 +33,7 @@ environment (make_board.py --scale), 1.4 for the A3 board (the default).
 from __future__ import annotations
 
 import asyncio
+import math
 import logging
 import os
 import sys
@@ -175,10 +176,27 @@ def referee(board: str) -> str:
 
 
 # ============================================================ stamping
+# The longest timed move board/calibrate_walk.py measures, per axis: a longer walk is
+# split into steps no longer than this, so each stays where the calibration is true
+# (a long burst goes less far than the short ones extrapolate to).
+LONGEST_CALIBRATED_S = {"forward": 0.55, "sideways": 1.0, "turn": 0.5}
+
+
 async def drive(robot: Robot, axis: str, amount: float, cal: sp.WalkCalibration) -> Result | None:
-    """Walk `amount` (cm forward or left, or degrees left) the calibrated way, then
-    stand still and let the body settle. None when it went; a Result if it fell."""
+    """Walk `amount` (cm forward or left, or degrees left) the calibrated way, in
+    steps no longer than the calibration measured. None when it went; a Result if it fell."""
     a = getattr(cal, axis)
+    step_max = a.rate * LONGEST_CALIBRATED_S[axis] + a.offset  # what the longest measured move covers
+    steps = max(1, math.ceil(abs(amount) / step_max)) if step_max > 1.0 else 1
+    for _ in range(steps):
+        fell = await _drive_once(robot, axis, amount / steps, a)
+        if fell:
+            return fell
+    return None
+
+
+async def _drive_once(robot: Robot, axis: str, amount: float, a: sp.Axis) -> Result | None:
+    """One timed move, then stand still and let the body settle."""
     seconds = max(a.seconds_for(amount), MIN_BURST_S) if abs(amount) > 0.05 else 0.0
     if seconds > 0:
         v = a.speed if amount > 0 else -a.speed

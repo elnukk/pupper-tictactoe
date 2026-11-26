@@ -21,7 +21,7 @@ export interface LogEntry {
 }
 
 export type EyeTrackingSource = 'mouse' | 'server' | 'mediapipe';
-export type CameraSource = 'browser' | 'server';
+export type CameraSource = 'browser' | 'server' | 'board';
 
 export interface AppConfig {
   modelName: string;
