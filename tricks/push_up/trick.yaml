@@ -1,7 +1,10 @@
 # One of the Pupper monorepo's 13 recorded tricks, as a tracking policy:
 # monorepo_tricks.py replayed the recording in simulation like the robot's old
 # player did (same speed), and the policy was trained on that motion.
-description: From standing, lowers and raises its body like push-ups.
+description: From standing, lowers its body once and pushes back up.
+# The recording does two push-ups; the first is back up standing by 5.3 s of its
+# motion, so it stops there and the walking policy takes over. Remove for both.
+play_s: 5.3
 type: policy
 policy: policy.json
 start_pose: standing

@@ -198,6 +198,8 @@ def load_tricks(trick_dir: Path = TRICK_DIR) -> dict[str, Trick]:
             info = json.loads(path.read_text())["trick"]
             duration = float(info["duration_s"])
             clips, fps = list(info.get("clips", [])), float(info.get("fps", 50.0))
+            if not clips and spec.get("play_s"):  # play only the start of the motion
+                duration = min(duration, float(spec["play_s"]))
         elif kind == "reference":
             path = spec_path.parent / spec["reference"]
             duration = float(json.loads(path.read_text())["playback_s"])

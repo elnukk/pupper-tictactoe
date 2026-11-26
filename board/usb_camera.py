@@ -33,6 +33,23 @@ WIDTH, HEIGHT = 2048, 1536  # the biggest 4:3 size it streams at 30 fps
 SETTLE_S = 0.8  # auto-exposure and white balance settle in this long after opening
 
 
+def _rotation() -> int | None:
+    """usb_camera.yaml's rotate_deg, as a cv2.rotate code (None: as it comes)."""
+    try:
+        import yaml
+        deg = int((yaml.safe_load(PARAMS.read_text()) or {}).get("rotate_deg", 0)) % 360
+    except Exception:
+        return None
+    return {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}.get(deg)
+
+
+ROTATE = _rotation()
+
+
+def _upright(frame: np.ndarray) -> np.ndarray:
+    return frame if ROTATE is None else cv2.rotate(frame, ROTATE)
+
+
 def device() -> str | None:
     """Its stable path (/dev/videoN numbers move around between boots)."""
     found = sorted(glob.glob("/dev/v4l/by-id/usb-*16MP*-video-index0"))
@@ -83,6 +100,7 @@ class _Stream(threading.Thread):
                     continue
                 fails = 0
                 if time.monotonic() >= ready_t:
+                    f = _upright(f)
                     with self.cond:
                         self.frame, self.frame_t = f, time.monotonic()
                         self.cond.notify_all()
@@ -165,9 +183,9 @@ def grab(settle_s: float = SETTLE_S) -> np.ndarray | None:
             if ok:
                 frame = f
             if time.monotonic() >= end and frame is not None:
-                return frame
+                return _upright(frame)
             if time.monotonic() > end + 3:
-                return frame
+                return None if frame is None else _upright(frame)
     finally:
         cap.release()
 

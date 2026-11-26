@@ -45,6 +45,7 @@ TOPDOWN_PX_PER_CM = 20.0  # the top-down board image
 INK_CONTRAST = 0.9  # a pixel this much darker than the paper around it is ink
 EMPTY_BELOW = 0.05  # a cell with less ink than this (fraction of its inside) is empty
 SHAPE_INSET = 0.1  # the shape is judged over more of the cell than the empty test (marks wander)
+SHAPE_INSET_O = 0.06  # ... and, for an O that wanders further, nearly all of it (only its ring is looked for)
 O_HOLE_ABOVE = 0.015  # paper enclosed by ink, as a fraction of the cell's area: an O
 X_CENTRE_ABOVE = 0.6  # ink at a mark's own centroid: an X's crossing (Xs ~0.9+, Os ~0.35 or less)
 CELL_INSET = 0.2  # ignore this fraction of the cell on each side (grid lines, misalignment)
@@ -169,6 +170,7 @@ class Cell:
     fisheye_px: tuple[float, float] | None = None  # cell centre in the raw frame
     native_px: float = 0.0  # the cell's smaller side in the raw frame
     hole: float = 0.0  # paper enclosed by the mark, fraction of the cell (an O has one)
+    in_view: float = 1.0  # how much of the cell the camera's frame covers (outside it reads as black)
 
     @property
     def bearing_deg(self) -> tuple[float, float] | None:
@@ -192,6 +194,7 @@ class Reading:
     board_R: np.ndarray | None = None
     board_t: np.ndarray | None = None
     debug: dict[str, np.ndarray] = field(default_factory=dict)  # name -> image
+    top: np.ndarray | None = None  # the board from straight above, TOPDOWN_PX_PER_CM, no drawing on it
 
     @property
     def grid(self) -> list[list[str]]:
@@ -236,13 +239,20 @@ class BoardReader:
         self.detector = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(ARUCO_DICT), params)
 
     # Where to look when the raw frame shows no marker: ahead, and down towards the floor.
-    SEARCH_VIEWS = [(0, 0), (0, 35), (0, 65), (-40, 30), (40, 30)]  # (right, down) degrees
+    SEARCH_VIEWS = [(0, 0), (0, 35), (0, 65), (-40, 30), (40, 30)]  # (right, down), as sin() of each: ~0-42 deg down
+    # ... and steeper ones, aimed properly: walking onto the board, its near markers end up 65-85 deg
+    # below the lens, bent too much at the edge of the fisheye to read in the raw frame.
+    STEEP_VIEWS = [(0, 70, 90), (0, 82, 90), (-30, 70, 90), (30, 70, 90)]  # (right, down, field of view) degrees
 
     def _detect(self, gray: np.ndarray) -> dict[int, np.ndarray]:
-        corners, ids, _ = self.detector.detectMarkers(gray)
+        # A white margin round the frame: a marker right at its edge has no white
+        # around it there, and the detector needs that to find the marker's outline.
+        pad = max(8, min(gray.shape[:2]) // 25)
+        padded = cv2.copyMakeBorder(gray, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=255)
+        corners, ids, _ = self.detector.detectMarkers(padded)
         if ids is None:
             return {}
-        return {int(i): c.reshape(4, 2).astype(np.float64)
+        return {int(i): c.reshape(4, 2).astype(np.float64) - pad
                 for i, c in zip(ids.ravel(), corners) if int(i) in MARKER_IDS}
 
     def read(self, frame: np.ndarray) -> Reading:
@@ -259,9 +269,11 @@ class BoardReader:
         for mid, c in raw.items():
             known[mid] = unproject(model, c[:, 0], c[:, 1])[0]
         if not known:
-            for right, down in self.SEARCH_VIEWS:
-                d = [math.sin(math.radians(right)), math.sin(math.radians(down)), 1.0]
-                cam = VirtualCamera.looking_at(d, 70, 600)
+            views = [([math.sin(math.radians(r)), math.sin(math.radians(d)), 1.0], 70) for r, d in self.SEARCH_VIEWS]
+            views += [([math.sin(math.radians(r)) * math.cos(math.radians(d)), math.sin(math.radians(d)),
+                        math.cos(math.radians(r)) * math.cos(math.radians(d))], fov) for r, d, fov in self.STEEP_VIEWS]
+            for direction, fov in views:
+                cam = VirtualCamera.looking_at(direction, fov, 600)
                 known = {mid: cam.rays(c) for mid, c in self._detect(cam.render(gray, model)).items()}
                 if known:
                     break
@@ -326,8 +338,18 @@ class BoardReader:
         # 4. top-down board, straight from the raw frame (one interpolation), in colour
         top = self._topdown(frame, model, cam, H)
         cells = self._score(top)
+        # Where the board runs out of the frame, the top-down image is black, which reads as
+        # ink: a cell not wholly in view is "?" (never a made-up X), whatever its ink says.
+        seen = self._topdown(np.full(gray.shape, 255, np.uint8), model, cam, H) > 128
+        p = TOPDOWN_PX_PER_CM
         for row in cells:
             for c in row:
+                cx, cy = self.layout.cell_center(c.row, c.col)
+                half = self.layout.cell / 2
+                part = seen[int((cy - half) * p):int((cy + half) * p), int((cx - half) * p):int((cx + half) * p)]
+                c.in_view = float(part.mean()) if part.size else 0.0
+                if c.in_view < 0.98:
+                    c.mark = "?"
                 xy = self.layout.cell_center(c.row, c.col)
                 c.fisheye_px = board_to_fisheye(xy)
                 half = self.layout.cell / 2
@@ -350,6 +372,7 @@ class BoardReader:
             board_R=None if Rb is None else cam.R @ Rb, board_t=None if Rb is None else cam.R @ tvec.ravel(),
         )
         reading.debug = {"raw": self._draw_raw(frame, raw, cells), "view": view, "topdown": self._draw_top(top, cells)}
+        reading.top = top
         return reading
 
     # ------------------------------------------------------------------------- views
@@ -448,7 +471,13 @@ class BoardReader:
                 elif hole > O_HOLE_ABOVE:  # a ring around paper: wherever it sits, it's an O
                     mark = "O"
                 else:
-                    mark = "?"
+                    # An O drawn off-centre hangs out of the shape window, which then cuts its
+                    # ring open: look for the ring again over nearly all of the cell.
+                    w2 = half * (1 - 2 * SHAPE_INSET_O)
+                    ring = ink[int((cy - w2) * p):int((cy + w2) * p), int((cx - w2) * p):int((cx + w2) * p)]
+                    hole2, _ = _shape(ring, self.layout.cell * p)
+                    mark = "O" if hole2 > O_HOLE_ABOVE else "?"
+                    hole = max(hole, hole2)
                 row.append(Cell(r, c, mark, frac, mid_frac, hole=hole))
             cells.append(row)
         return cells

@@ -44,6 +44,12 @@ class StampConfig:
     lateral_tolerance_cm: float = 1.5  # line the stamp up with the cell to within this, sideways
     yaw_tolerance_deg: float = 4.0  # and face the board squarely to within this
     max_steps: int = 8  # looks before giving up
+    # Closed-loop steering (lab/board_game.py): walk in chunks, looking after each, steering as it walks.
+    chunk_cm: float = 12.0  # forward between looks
+    final_cm: float = 10.0  # the last stretch, walked without a look (the board is under Pupper by then)
+    steer_gain: float = 0.7  # how much of the heading and sideways error one chunk corrects (0..1)
+    big_turn_deg: float = 10.0  # a bigger heading error is turned in place first
+    big_side_cm: float = 6.0  # a bigger sideways error is stepped first
     max_walk_cm: float = 150.0  # a stamping trip never walks further than this in total
 
     @staticmethod
@@ -76,6 +82,7 @@ class WalkCalibration:
     forward: Axis = field(default_factory=lambda: Axis(0.2, 20.0))
     sideways: Axis = field(default_factory=lambda: Axis(0.2, 20.0))
     turn: Axis = field(default_factory=lambda: Axis(30.0, 30.0))
+    backward: Axis | None = None  # walking back, when measured apart from forward
     camera_yaw_deg: float = 0.0  # how far the camera looks left of Pupper's walking direction
     measured: bool = False
     notes: dict = field(default_factory=dict)  # spread of the measurements, for the person
@@ -89,6 +96,7 @@ class WalkCalibration:
             forward=Axis(**d.get("forward", asdict(Axis(0.2, 20.0)))),
             sideways=Axis(**d.get("sideways", asdict(Axis(0.2, 20.0)))),
             turn=Axis(**d.get("turn", asdict(Axis(30.0, 30.0)))),
+            backward=Axis(**d["backward"]) if d.get("backward") else None,
             camera_yaw_deg=float(d.get("camera_yaw_deg", 0.0)),
             measured=bool(d.get("measured", False)),
             notes=d.get("notes", {}) or {},
@@ -96,6 +104,7 @@ class WalkCalibration:
 
     def save(self, path: Path = CALIBRATION) -> None:
         d = {"forward": asdict(self.forward), "sideways": asdict(self.sideways), "turn": asdict(self.turn),
+             **({"backward": asdict(self.backward)} if self.backward else {}),
              "camera_yaw_deg": round(self.camera_yaw_deg, 2), "measured": self.measured, "notes": self.notes}
         path.write_text("# Written by board/calibrate_walk.py: how far Pupper's timed walks really go.\n"
                         + yaml.safe_dump(d, sort_keys=False))

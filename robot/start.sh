@@ -37,6 +37,8 @@ pkill -f "[r]obot/server.py" 2>/dev/null; free_port
 setsid nohup bash -c "$ROS; cd $HERE && exec python3 -u $HERE/server.py" > $LOG/server.log 2>&1 < /dev/null &
 for i in $(seq 1 30); do curl -s -o /dev/null localhost:8000/health && break; sleep 1; done
 curl -s -o /dev/null localhost:8000/health || { echo "robot server did not start; see $LOG/server.log"; exit 1; }
+echo "      standing Pupper up"
+curl -s -X POST localhost:8000/tools/stand_up -H 'Content-Type: application/json' -d '{}' > /dev/null
 
 if [ $KIOSK = 0 ]; then
   echo "[3/3] ready. From a laptop:  ssh -N -L 8000:localhost:8000 pi@<pupper>  then open http://localhost:8000"

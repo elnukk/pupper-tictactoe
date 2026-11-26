@@ -3,6 +3,7 @@
 #
 # fx/fy are a first guess (about 85 degrees across). Reading the board doesn't
 # depend on them; only the board's distance and pose (stamping) do.
+rotate_deg: 180  # mounted upside down (above Pupper's fisheye): every frame is turned this much (0 or 180)
 size: [2048, 1536]  # the frame size these numbers are for; other sizes are scaled
 camera_params:
   fx: 1100.0

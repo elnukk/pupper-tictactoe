@@ -46,7 +46,8 @@ SERVER = "http://localhost:8000"
 SETTLE_S = 1.5  # after a move: the queue starts it, the body stops swaying
 # Timed moves, seconds. At 0.2 m/s commanded: 5, 8, 11 cm forward (short bursts really go about 1.5x
 # that), 8, 14, 20 cm sideways. At 30 deg/s: 15, 30 deg.
-DURATIONS = {"forward": [0.25, 0.4, 0.55], "sideways": [0.4, 0.7, 1.0], "turn": [0.5, 1.0]}
+# Sideways stops at 0.7 s: stamping only steps a few cm sideways, and longer moves lose the board.
+DURATIONS = {"forward": [0.25, 0.4, 0.55], "sideways": [0.4, 0.7], "turn": [0.5, 1.0]}
 
 
 def http(path: str, body: dict | None = None, timeout: float = 10.0):
@@ -90,6 +91,9 @@ def fit(samples: list[tuple[float, float]]) -> tuple[float, float, float]:
     """(rate, offset, spread) for distance = rate * seconds + offset, least squares."""
     t = np.array([s for s, _ in samples])
     d = np.array([abs(x) for _, x in samples])
+    if len(set(t.tolist())) < 2:  # one duration only (the longer moves lost the board): no offset to fit
+        rate = float(np.mean(d / t))
+        return rate, 0.0, float(np.std(d - rate * t)) if len(d) > 2 else 0.0
     A = np.stack([t, np.ones_like(t)], 1)
     (rate, offset), *_ = np.linalg.lstsq(A, d, rcond=None)
     spread = float(np.std(d - A @ np.array([rate, offset]))) if len(d) > 2 else 0.0
@@ -100,7 +104,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--scale", type=float, default=1.4, help="the board's make_board.py --scale (A3: 1.4)")
     ap.add_argument("--speed", type=float, default=0.2, help="walking speed, m/s (the policy's slowest that moves)")
-    ap.add_argument("--turn-speed", type=float, default=30.0, help="turning speed, deg/s")
+    ap.add_argument("--turn-speed", type=float, default=20.0, help="turning speed, deg/s (the slowest the robot takes; 30: 1 s turns lose the board)")
     ap.add_argument("--rounds", type=int, default=2, help="how many times to repeat every move")
     ap.add_argument("--dry-run", action="store_true", help="only look and print the pose")
     args = ap.parse_args()
@@ -142,12 +146,25 @@ def main() -> int:
         got = [abs(d) / t for t, d, _ in samples[axis] if t > 0]
         return statistics.median(got) if got else (args.turn_speed if axis == "turn" else args.speed * 100)
 
+    def put_back() -> None:
+        """The board is out of view: stop, and let the person put Pupper back home."""
+        nonlocal home
+        http("/tools/stop", {})
+        while True:
+            input("    lost the board: put Pupper back (board's near edge ~10 cm away, centred, square)"
+                  " and press Enter (Ctrl-C stops) ")
+            now = looker.pose()
+            if now is not None:
+                home = now
+                return
+            print("    still can't see the board")
+
     def recenter() -> None:
         """Walk back to `home`, biggest error first, at most 3 small moves."""
         for _ in range(3):
             now = looker.pose()
             if now is None:
-                print("    (re-centring: can't see the board)")
+                put_back()
                 return
             fwd, left, turned = sp.moved(home, now)
             for axis, err, tol in (("turn", turned, 4.0), ("forward", fwd, 2.5), ("sideways", left, 2.5)):
@@ -169,12 +186,14 @@ def main() -> int:
                         after = looker.pose()
                         if before is None or after is None:
                             print(f"  {axis} {sign * seconds:+.2f} s: lost sight of the board; skipped")
-                            continue
+                            put_back()
+                            break  # (its return move would now walk Pupper away from home: skip it too)
                         fwd, left, turned = sp.moved(before, after)
                         got = {"forward": fwd, "sideways": left, "turn": turned}[axis]
                         samples[axis].append((seconds, sign * got, sign))
                         if axis == "forward" and abs(fwd) > 5:
-                            drift.append(math.degrees(math.atan2(left, fwd)) * (1 if fwd > 0 else -1))
+                            s = 1 if fwd > 0 else -1  # a backward move strays the other way round: flip it to forward
+                            drift.append(math.degrees(math.atan2(left * s, fwd * s)))
                         unit = "deg" if axis == "turn" else "cm"
                         print(f"  round {rnd + 1} {axis:8s} {sign * seconds:+.2f} s -> {got:+6.1f} {unit}"
                               f"   (also {fwd:+.1f} cm fwd, {left:+.1f} cm left, {turned:+.1f} deg)")
@@ -185,15 +204,24 @@ def main() -> int:
         return 1
 
     notes = {}
+    old = sp.WalkCalibration.load()
     for axis, speed in (("forward", args.speed), ("sideways", args.speed), ("turn", args.turn_speed)):
         use = [(t, d) for t, d, sign in samples[axis] if axis != "forward" or sign > 0]
         if len(use) < 3:
+            if axis != "forward" and old.measured:
+                setattr(cal, axis, getattr(old, axis))
+                print(f"not enough {axis} measurements ({len(use)}); keeping the old {axis} calibration")
+                continue
             print(f"not enough {axis} measurements ({len(use)}); nothing saved")
             return 1
-        if axis == "forward":
-            back = [abs(d) / t for t, d, sign in samples[axis] if sign < 0]
-            if back:
-                notes["backward_cm_per_s"] = round(statistics.median(back), 1)
+        if axis == "forward":  # walking back covers more than forward in short bursts: its own fit
+            back = [(t, d) for t, d, sign in samples[axis] if sign < 0]
+            if len(back) >= 3:
+                b_rate, b_offset, b_spread = fit(back)
+                if b_rate > 0:
+                    cal.backward = sp.Axis(speed=speed, rate=round(b_rate, 2), offset=round(b_offset, 2))
+                    notes["backward_spread_cm"] = round(b_spread, 2)
+                    print(f"backward: {b_rate:5.1f} cm/s, {b_offset:+.1f} cm per move; moves vary by about {b_spread:.1f} cm")
         rate, offset, spread = fit(use)
         if rate <= 0:
             print(f"the {axis} moves didn't move Pupper (rate {rate:.1f}); nothing saved")
